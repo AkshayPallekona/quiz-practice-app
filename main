@@ -23,8 +23,8 @@ const LinearGradient kBrandGradient = LinearGradient(
 );
 
 const int kSecondsPerQuestion = 60;
-const String kStudentName = 'Arjun Reddy';
-const String kStudentFirstName = 'Arjun';
+const String kStudentName = 'Akshay';
+const String kStudentFirstName = 'Akshay';
 
 class QuizMasterApp extends StatelessWidget {
   const QuizMasterApp({super.key});
