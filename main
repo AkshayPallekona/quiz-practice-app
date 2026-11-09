@@ -1,0 +1,2659 @@
+// QuizMaster - Smart Quiz Practice App
+// Single-file Flutter app for DartPad (Flutter mode). No external packages.
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+void main() => runApp(const QuizMasterApp());
+
+// ============================================================================
+// CONSTANTS & THEME
+// ============================================================================
+
+const Color kBlue = Color(0xFF2563EB);
+const Color kPurple = Color(0xFF7C3AED);
+const Color kIndigo = Color(0xFF4F46E5);
+const Color kBackground = Color(0xFFF4F5FF);
+
+const LinearGradient kBrandGradient = LinearGradient(
+  colors: [kBlue, kPurple],
+  begin: Alignment.topLeft,
+  end: Alignment.bottomRight,
+);
+
+const int kSecondsPerQuestion = 60;
+const String kStudentName = 'Arjun Reddy';
+const String kStudentFirstName = 'Arjun';
+
+class QuizMasterApp extends StatelessWidget {
+  const QuizMasterApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'QuizMaster',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: kIndigo,
+          brightness: Brightness.light,
+        ),
+        scaffoldBackgroundColor: kBackground,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          centerTitle: true,
+        ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            minimumSize: const Size(64, 52),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+          ),
+        ),
+        outlinedButtonTheme: OutlinedButtonThemeData(
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size(64, 52),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+          ),
+        ),
+      ),
+      home: const AppShell(),
+    );
+  }
+}
+
+// ============================================================================
+// MODELS
+// ============================================================================
+
+class Question {
+  final String text;
+  final List<String> options;
+  final int answer; // index of the correct option
+  final String explanation;
+
+  const Question(this.text, this.options, this.answer, this.explanation);
+}
+
+class QuizCategory {
+  final String name;
+  final IconData icon;
+  final Color color;
+  final List<Question> questions;
+
+  const QuizCategory({
+    required this.name,
+    required this.icon,
+    required this.color,
+    required this.questions,
+  });
+
+  int get totalSeconds => questions.length * kSecondsPerQuestion;
+}
+
+class ReviewItem {
+  final Question question;
+  final int selected; // -1 when unanswered
+
+  const ReviewItem(this.question, this.selected);
+
+  bool get answered => selected >= 0;
+  bool get correct => selected == question.answer;
+}
+
+class QuizResult {
+  final QuizCategory category;
+  final int total;
+  final int correct;
+  final int incorrect;
+  final int unanswered;
+  final int secondsTaken;
+  final DateTime completedAt;
+  final List<ReviewItem> review;
+
+  const QuizResult({
+    required this.category,
+    required this.total,
+    required this.correct,
+    required this.incorrect,
+    required this.unanswered,
+    required this.secondsTaken,
+    required this.completedAt,
+    required this.review,
+  });
+
+  double get percent => total == 0 ? 0 : correct * 100 / total;
+}
+
+class LeaderboardEntry {
+  final String name;
+  final int score;
+  final int quizzes;
+  final double average;
+  final bool isYou;
+
+  const LeaderboardEntry(
+    this.name,
+    this.score,
+    this.quizzes,
+    this.average, {
+    this.isYou = false,
+  });
+}
+
+extension HistoryStats on List<QuizResult> {
+  double get bestPercent =>
+      isEmpty ? 0 : map((r) => r.percent).reduce(math.max);
+
+  double get averagePercent =>
+      isEmpty ? 0 : fold<double>(0, (s, r) => s + r.percent) / length;
+
+  int get totalCorrect => fold<int>(0, (s, r) => s + r.correct);
+
+  String? get bestCategory {
+    if (isEmpty) return null;
+    QuizResult best = first;
+    for (final r in this) {
+      if (r.percent > best.percent) best = r;
+    }
+    return best.category.name;
+  }
+}
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+
+String fmtDuration(int seconds) {
+  final s = seconds < 0 ? 0 : seconds;
+  final m = (s ~/ 60).toString().padLeft(2, '0');
+  final r = (s % 60).toString().padLeft(2, '0');
+  return '$m:$r';
+}
+
+String fmtPercent(double p) => '${p.round()}%';
+
+String fmtDate(DateTime d) {
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+  final hour = d.hour % 12 == 0 ? 12 : d.hour % 12;
+  final minute = d.minute.toString().padLeft(2, '0');
+  final suffix = d.hour >= 12 ? 'PM' : 'AM';
+  return '${d.day} ${months[d.month - 1]} ${d.year}, $hour:$minute $suffix';
+}
+
+String performanceMessage(double p) {
+  if (p >= 90) return 'Outstanding! You have mastered this topic.';
+  if (p >= 75) return 'Excellent work! Keep up the momentum.';
+  if (p >= 60) return 'Good job! A little more practice will make you perfect.';
+  if (p >= 40) return 'Fair attempt. Review the explanations and try again.';
+  return 'Keep practising. Every attempt makes you stronger!';
+}
+
+IconData performanceIcon(double p) {
+  if (p >= 90) return Icons.emoji_events_rounded;
+  if (p >= 75) return Icons.workspace_premium_rounded;
+  if (p >= 60) return Icons.thumb_up_alt_rounded;
+  if (p >= 40) return Icons.trending_up_rounded;
+  return Icons.fitness_center_rounded;
+}
+
+String initials(String name) {
+  final parts = name.trim().split(RegExp(r'\s+'));
+  if (parts.isEmpty || parts.first.isEmpty) return '?';
+  if (parts.length == 1) return parts.first[0].toUpperCase();
+  return (parts.first[0] + parts.last[0]).toUpperCase();
+}
+
+Route<T> fadeSlideRoute<T>(Widget page) {
+  return PageRouteBuilder<T>(
+    transitionDuration: const Duration(milliseconds: 350),
+    reverseTransitionDuration: const Duration(milliseconds: 250),
+    pageBuilder: (context, animation, secondaryAnimation) => page,
+    transitionsBuilder: (context, animation, secondaryAnimation, child) {
+      final curved =
+          CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
+      return FadeTransition(
+        opacity: curved,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.04),
+            end: Offset.zero,
+          ).animate(curved),
+          child: child,
+        ),
+      );
+    },
+  );
+}
+
+// ============================================================================
+// REUSABLE WIDGETS
+// ============================================================================
+
+/// Centers content and limits its width so the app looks good on desktop.
+class ResponsiveBody extends StatelessWidget {
+  final Widget child;
+  final double maxWidth;
+
+  const ResponsiveBody({super.key, required this.child, this.maxWidth = 720});
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: maxWidth),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
+class AppCard extends StatelessWidget {
+  final Widget child;
+  final EdgeInsetsGeometry padding;
+  final VoidCallback? onTap;
+  final Color? color;
+  final Gradient? gradient;
+  final Color? borderColor;
+
+  const AppCard({
+    super.key,
+    required this.child,
+    this.padding = const EdgeInsets.all(16),
+    this.onTap,
+    this.color,
+    this.gradient,
+    this.borderColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final radius = BorderRadius.circular(22);
+    return Container(
+      decoration: BoxDecoration(
+        color: gradient == null ? (color ?? Colors.white) : null,
+        gradient: gradient,
+        borderRadius: radius,
+        border: borderColor == null
+            ? null
+            : Border.all(color: borderColor!, width: 1.6),
+        boxShadow: [
+          BoxShadow(
+            color: kIndigo.withValues(alpha: 0.09),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Material(
+        type: MaterialType.transparency,
+        child: InkWell(
+          borderRadius: radius,
+          onTap: onTap,
+          child: Padding(padding: padding, child: child),
+        ),
+      ),
+    );
+  }
+}
+
+class FadeSlideIn extends StatelessWidget {
+  final Widget child;
+  final int delayMs;
+
+  const FadeSlideIn({super.key, required this.child, this.delayMs = 0});
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0, end: 1),
+      duration: Duration(milliseconds: 450 + delayMs),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, child) => Opacity(
+        opacity: value,
+        child: Transform.translate(
+          offset: Offset(0, 26 * (1 - value)),
+          child: child,
+        ),
+      ),
+      child: child,
+    );
+  }
+}
+
+class SectionTitle extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+
+  const SectionTitle(this.title, {super.key, this.subtitle});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: theme.textTheme.titleLarge?.copyWith(
+            fontWeight: FontWeight.w800,
+            color: const Color(0xFF1E1B4B),
+          ),
+        ),
+        if (subtitle != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(
+              subtitle!,
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(color: Colors.blueGrey.shade600),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class StatCard extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
+
+  const StatCard({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AppCard(
+      child: Row(
+        children: [
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(icon, color: color),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  value,
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: const Color(0xFF1E1B4B),
+                  ),
+                ),
+                Text(
+                  label,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: Colors.blueGrey.shade600),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class EmptyState extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String message;
+
+  const EmptyState({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.message,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 96,
+              height: 96,
+              decoration: BoxDecoration(
+                color: kIndigo.withValues(alpha: 0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, size: 48, color: kIndigo),
+            ),
+            const SizedBox(height: 20),
+            Text(title,
+                style: theme.textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 8),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(color: Colors.blueGrey.shade600),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class CategoryCard extends StatelessWidget {
+  final QuizCategory category;
+  final VoidCallback onTap;
+
+  const CategoryCard({super.key, required this.category, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AppCard(
+      onTap: onTap,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  category.color,
+                  category.color.withValues(alpha: 0.65),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(15),
+            ),
+            child: Icon(category.icon, color: Colors.white),
+          ),
+          const Spacer(),
+          Text(
+            category.name,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w800,
+              color: const Color(0xFF1E1B4B),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${category.questions.length} questions',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: Colors.blueGrey.shade600),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class OptionTile extends StatelessWidget {
+  final String label;
+  final String text;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const OptionTile({
+    super.key,
+    required this.label,
+    required this.text,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final radius = BorderRadius.circular(18);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+        decoration: BoxDecoration(
+          color: selected ? scheme.primaryContainer : Colors.white,
+          borderRadius: radius,
+          border: Border.all(
+            color: selected ? scheme.primary : Colors.grey.shade300,
+            width: selected ? 2 : 1.2,
+          ),
+          boxShadow: selected
+              ? [
+                  BoxShadow(
+                    color: scheme.primary.withValues(alpha: 0.18),
+                    blurRadius: 14,
+                    offset: const Offset(0, 6),
+                  ),
+                ]
+              : const [],
+        ),
+        child: Material(
+          type: MaterialType.transparency,
+          child: InkWell(
+            borderRadius: radius,
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+              child: Row(
+                children: [
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 220),
+                    width: 36,
+                    height: 36,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: selected ? scheme.primary : kIndigo.withValues(alpha: 0.1),
+                    ),
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: selected ? Colors.white : kIndigo,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      text,
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                            fontWeight:
+                                selected ? FontWeight.w700 : FontWeight.w500,
+                          ),
+                    ),
+                  ),
+                  AnimatedOpacity(
+                    duration: const Duration(milliseconds: 200),
+                    opacity: selected ? 1 : 0,
+                    child: Icon(Icons.check_circle_rounded,
+                        color: scheme.primary),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// APP SHELL (bottom navigation + session state)
+// ============================================================================
+
+class AppShell extends StatefulWidget {
+  const AppShell({super.key});
+
+  @override
+  State<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends State<AppShell> {
+  int _index = 0;
+  final List<QuizResult> _history = [];
+
+  void _addResult(QuizResult result) {
+    setState(() => _history.add(result));
+  }
+
+  Widget _buildPage() {
+    switch (_index) {
+      case 0:
+        return HomeTab(history: _history, onQuizComplete: _addResult);
+      case 1:
+        return HistoryTab(history: _history);
+      case 2:
+        return LeaderboardTab(history: _history);
+      default:
+        return ProfileTab(history: _history);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 300),
+        switchInCurve: Curves.easeOut,
+        transitionBuilder: (child, animation) => FadeTransition(
+          opacity: animation,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.02),
+              end: Offset.zero,
+            ).animate(animation),
+            child: child,
+          ),
+        ),
+        child: KeyedSubtree(key: ValueKey<int>(_index), child: _buildPage()),
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _index,
+        onDestinationSelected: (i) => setState(() => _index = i),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home_rounded),
+            label: 'Home',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.history_outlined),
+            selectedIcon: Icon(Icons.history_rounded),
+            label: 'History',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.leaderboard_outlined),
+            selectedIcon: Icon(Icons.leaderboard_rounded),
+            label: 'Leaderboard',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.person_outline_rounded),
+            selectedIcon: Icon(Icons.person_rounded),
+            label: 'Profile',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// HOME TAB
+// ============================================================================
+
+class HomeTab extends StatelessWidget {
+  final List<QuizResult> history;
+  final ValueChanged<QuizResult> onQuizComplete;
+
+  const HomeTab({
+    super.key,
+    required this.history,
+    required this.onQuizComplete,
+  });
+
+  void _showStartSheet(BuildContext context, QuizCategory category) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      constraints: const BoxConstraints(maxWidth: 560),
+      builder: (sheetContext) {
+        final theme = Theme.of(sheetContext);
+        Widget info(IconData icon, String text) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Row(
+                children: [
+                  Icon(icon, size: 20, color: kIndigo),
+                  const SizedBox(width: 12),
+                  Expanded(child: Text(text)),
+                ],
+              ),
+            );
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 4, 24, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 56,
+                      height: 56,
+                      decoration: BoxDecoration(
+                        color: category.color,
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                      child: Icon(category.icon, color: Colors.white, size: 30),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Text(
+                        category.name,
+                        style: theme.textTheme.titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                info(Icons.quiz_rounded,
+                    '${category.questions.length} multiple-choice questions'),
+                info(Icons.timer_rounded,
+                    'Time limit: ${fmtDuration(category.totalSeconds)} minutes'),
+                info(Icons.add_task_rounded, '1 mark for each correct answer'),
+                info(Icons.shield_rounded, 'No negative marking'),
+                info(Icons.shuffle_rounded, 'Questions appear in random order'),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    icon: const Icon(Icons.play_arrow_rounded),
+                    label: const Text('Start Quiz'),
+                    onPressed: () {
+                      Navigator.of(sheetContext).pop();
+                      Navigator.of(context).push(
+                        fadeSlideRoute<void>(
+                          QuizScreen(
+                            category: category,
+                            onComplete: onQuizComplete,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ResponsiveBody(
+      maxWidth: 1000,
+      child: CustomScrollView(
+        slivers: [
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              child: FadeSlideIn(
+                child: Container(
+                  padding: const EdgeInsets.all(22),
+                  decoration: BoxDecoration(
+                    gradient: kBrandGradient,
+                    borderRadius: BorderRadius.circular(28),
+                    boxShadow: [
+                      BoxShadow(
+                        color: kPurple.withValues(alpha: 0.3),
+                        blurRadius: 24,
+                        offset: const Offset(0, 12),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 50,
+                            height: 50,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.2),
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: const Icon(Icons.psychology_alt_rounded,
+                                color: Colors.white, size: 30),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'QuizMaster',
+                                  style: theme.textTheme.headlineSmall
+                                      ?.copyWith(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                                Text(
+                                  'Smart Quiz Practice App',
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                    color: Colors.white.withValues(alpha: 0.85),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 24),
+                      Text(
+                        'Welcome back, $kStudentFirstName!',
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        history.isEmpty
+                            ? 'Pick a category below and take your first quiz.'
+                            : 'You have an average of ${fmtPercent(history.averagePercent)} so far. Keep going!',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: Colors.white.withValues(alpha: 0.9),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              child: FadeSlideIn(
+                delayMs: 100,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: StatCard(
+                        icon: Icons.task_alt_rounded,
+                        label: 'Quizzes completed',
+                        value: '${history.length}',
+                        color: kBlue,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: StatCard(
+                        icon: Icons.emoji_events_rounded,
+                        label: 'Highest score',
+                        value: history.isEmpty
+                            ? '--'
+                            : fmtPercent(history.bestPercent),
+                        color: kPurple,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(16, 24, 16, 12),
+              child: SectionTitle(
+                'Quiz Categories',
+                subtitle: 'Choose a subject to start practising',
+              ),
+            ),
+          ),
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+            sliver: SliverGrid(
+              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                maxCrossAxisExtent: 240,
+                mainAxisExtent: 184,
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 12,
+              ),
+              delegate: SliverChildBuilderDelegate(
+                (context, i) => FadeSlideIn(
+                  delayMs: i * 70,
+                  child: CategoryCard(
+                    category: kCategories[i],
+                    onTap: () => _showStartSheet(context, kCategories[i]),
+                  ),
+                ),
+                childCount: kCategories.length,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// QUIZ SCREEN
+// ============================================================================
+
+class QuizScreen extends StatefulWidget {
+  final QuizCategory category;
+  final ValueChanged<QuizResult> onComplete;
+
+  const QuizScreen({
+    super.key,
+    required this.category,
+    required this.onComplete,
+  });
+
+  @override
+  State<QuizScreen> createState() => _QuizScreenState();
+}
+
+class _QuizScreenState extends State<QuizScreen> {
+  late final List<Question> _questions;
+  late final List<int> _selected;
+  late final int _totalSeconds;
+  late int _remaining;
+  int _index = 0;
+  bool _submitted = false;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _questions = List<Question>.of(widget.category.questions)..shuffle();
+    _selected = List<int>.filled(_questions.length, -1);
+    _totalSeconds = _questions.length * kSecondsPerQuestion;
+    _remaining = _totalSeconds;
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted || _submitted) {
+        timer.cancel();
+        return;
+      }
+      setState(() => _remaining--);
+      if (_remaining <= 0) {
+        _finish(auto: true);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _select(int option) {
+    setState(() {
+      // Tapping the selected option again clears the answer.
+      _selected[_index] = _selected[_index] == option ? -1 : option;
+    });
+  }
+
+  void _goTo(int i) {
+    if (i < 0 || i >= _questions.length) return;
+    setState(() => _index = i);
+  }
+
+  Future<void> _confirmSubmit() async {
+    final unanswered = _selected.where((s) => s < 0).length;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(Icons.assignment_turned_in_rounded,
+            size: 36, color: kIndigo),
+        title: const Text('Submit quiz?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+                'You have answered ${_questions.length - unanswered} of ${_questions.length} questions.'),
+            if (unanswered > 0) ...[
+              const SizedBox(height: 8),
+              Text(
+                '$unanswered question(s) are unanswered and will score 0.',
+                style: TextStyle(color: Colors.red.shade600),
+              ),
+            ],
+            const SizedBox(height: 8),
+            const Text('You cannot change your answers after submitting.'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Keep working'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(minimumSize: const Size(96, 44)),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Submit'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && mounted) {
+      _finish(auto: false);
+    }
+  }
+
+  Future<void> _confirmQuit() async {
+    final quit = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(Icons.exit_to_app_rounded, size: 34),
+        title: const Text('Quit quiz?'),
+        content: const Text(
+            'Your progress will be lost and this attempt will not be saved.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Continue quiz'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(minimumSize: const Size(96, 44)),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Quit'),
+          ),
+        ],
+      ),
+    );
+    if (quit == true && mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  void _finish({required bool auto}) {
+    if (_submitted || !mounted) return;
+    _submitted = true;
+    _timer?.cancel();
+
+    final review = <ReviewItem>[
+      for (var i = 0; i < _questions.length; i++)
+        ReviewItem(_questions[i], _selected[i]),
+    ];
+    final correct = review.where((r) => r.answered && r.correct).length;
+    final unanswered = review.where((r) => !r.answered).length;
+    final incorrect = review.length - correct - unanswered;
+    final taken = math.max(0, math.min(_totalSeconds, _totalSeconds - _remaining));
+
+    final result = QuizResult(
+      category: widget.category,
+      total: review.length,
+      correct: correct,
+      incorrect: incorrect,
+      unanswered: unanswered,
+      secondsTaken: taken,
+      completedAt: DateTime.now(),
+      review: review,
+    );
+    widget.onComplete(result);
+
+    // Removes the quiz screen (and any open dialog) and shows the result.
+    Navigator.of(context).pushAndRemoveUntil(
+      fadeSlideRoute<void>(ResultScreen(result: result, autoSubmitted: auto)),
+      (route) => route.isFirst,
+    );
+  }
+
+  Widget _buildPalette() {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      height: 46,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        itemCount: _questions.length,
+        separatorBuilder: (context, i) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final current = i == _index;
+          final answered = _selected[i] >= 0;
+          return InkWell(
+            customBorder: const CircleBorder(),
+            onTap: () => _goTo(i),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              width: 38,
+              height: 38,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: current
+                    ? scheme.primary
+                    : answered
+                        ? scheme.primaryContainer
+                        : Colors.white,
+                border: Border.all(
+                  color: current || answered
+                      ? scheme.primary
+                      : Colors.grey.shade300,
+                  width: 1.4,
+                ),
+              ),
+              child: Text(
+                '${i + 1}',
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: current ? Colors.white : scheme.onSurface,
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final n = _questions.length;
+    final q = _questions[_index];
+    final answered = _selected.where((s) => s >= 0).length;
+    final lowTime = _remaining <= 60;
+    final isLast = _index == n - 1;
+
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        await _confirmQuit();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(
+            widget.category.name,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+          actions: [
+            Padding(
+              padding: const EdgeInsets.only(right: 14),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: lowTime ? Colors.red.shade50 : scheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.timer_rounded,
+                      size: 18,
+                      color: lowTime ? Colors.red.shade600 : scheme.primary,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      fmtDuration(_remaining),
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                        color: lowTime ? Colors.red.shade600 : scheme.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        body: ResponsiveBody(
+          maxWidth: 760,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          'Question ${_index + 1} of $n',
+                          style: theme.textTheme.titleSmall
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                        const Spacer(),
+                        Text(
+                          '$answered answered',
+                          style: theme.textTheme.bodySmall
+                              ?.copyWith(color: Colors.blueGrey.shade600),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    TweenAnimationBuilder<double>(
+                      tween: Tween<double>(begin: 0, end: (_index + 1) / n),
+                      duration: const Duration(milliseconds: 350),
+                      curve: Curves.easeOut,
+                      builder: (context, value, _) => LinearProgressIndicator(
+                        value: value,
+                        minHeight: 8,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              _buildPalette(),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 300),
+                    transitionBuilder: (child, animation) => FadeTransition(
+                      opacity: animation,
+                      child: SlideTransition(
+                        position: Tween<Offset>(
+                          begin: const Offset(0.05, 0),
+                          end: Offset.zero,
+                        ).animate(animation),
+                        child: child,
+                      ),
+                    ),
+                    child: Column(
+                      key: ValueKey<int>(_index),
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        AppCard(
+                          padding: const EdgeInsets.all(20),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: kIndigo.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  'Q${_index + 1}',
+                                  style: const TextStyle(
+                                    color: kIndigo,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                q.text,
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                  height: 1.4,
+                                  color: const Color(0xFF1E1B4B),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        for (var i = 0; i < q.options.length; i++)
+                          OptionTile(
+                            label: String.fromCharCode(65 + i),
+                            text: q.options[i],
+                            selected: _selected[_index] == i,
+                            onTap: () => _select(i),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  boxShadow: [
+                    BoxShadow(
+                      color: kIndigo.withValues(alpha: 0.08),
+                      blurRadius: 16,
+                      offset: const Offset(0, -4),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _index > 0 ? () => _goTo(_index - 1) : null,
+                        icon: const Icon(Icons.arrow_back_rounded),
+                        label: const Text('Previous'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: isLast
+                          ? FilledButton.icon(
+                              onPressed: _confirmSubmit,
+                              icon: const Icon(Icons.check_circle_rounded),
+                              label: const Text('Submit'),
+                            )
+                          : FilledButton.icon(
+                              onPressed: () => _goTo(_index + 1),
+                              icon: const Icon(Icons.arrow_forward_rounded),
+                              label: const Text('Next'),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// RESULT SCREEN
+// ============================================================================
+
+class ResultScreen extends StatelessWidget {
+  final QuizResult result;
+  final bool autoSubmitted;
+
+  const ResultScreen({
+    super.key,
+    required this.result,
+    this.autoSubmitted = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final p = result.percent;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Quiz Result',
+            style: TextStyle(fontWeight: FontWeight.w800)),
+      ),
+      body: ResponsiveBody(
+        maxWidth: 640,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+          children: [
+            if (autoSubmitted)
+              Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade50,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.amber.shade300),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.timer_off_rounded, color: Colors.amber.shade800),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Text(
+                          "Time's up! Your quiz was submitted automatically."),
+                    ),
+                  ],
+                ),
+              ),
+            FadeSlideIn(
+              child: AppCard(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  children: [
+                    Text(
+                      result.category.name,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: kIndigo,
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    TweenAnimationBuilder<double>(
+                      tween: Tween<double>(begin: 0, end: p / 100),
+                      duration: const Duration(milliseconds: 1300),
+                      curve: Curves.easeOutCubic,
+                      builder: (context, value, _) => SizedBox(
+                        width: 180,
+                        height: 180,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            CircularProgressIndicator(
+                              value: value,
+                              strokeWidth: 14,
+                              backgroundColor: kIndigo.withValues(alpha: 0.12),
+                              color: scheme.primary,
+                            ),
+                            Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    '${(value * 100).round()}%',
+                                    style: theme.textTheme.displaySmall
+                                        ?.copyWith(
+                                      fontWeight: FontWeight.w900,
+                                      color: const Color(0xFF1E1B4B),
+                                    ),
+                                  ),
+                                  Text(
+                                    'Score',
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                        color: Colors.blueGrey.shade600),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Text(
+                      '${result.correct} / ${result.total} correct',
+                      style: theme.textTheme.titleLarge
+                          ?.copyWith(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 14),
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: scheme.primaryContainer.withValues(alpha: 0.6),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(performanceIcon(p), color: scheme.primary),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              performanceMessage(p),
+                              style: const TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            FadeSlideIn(
+              delayMs: 120,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _ResultStat(
+                      icon: Icons.check_circle_rounded,
+                      label: 'Correct',
+                      value: '${result.correct}',
+                      color: Colors.green.shade600,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _ResultStat(
+                      icon: Icons.cancel_rounded,
+                      label: 'Incorrect',
+                      value: '${result.incorrect}',
+                      color: Colors.red.shade500,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _ResultStat(
+                      icon: Icons.help_rounded,
+                      label: 'Unanswered',
+                      value: '${result.unanswered}',
+                      color: Colors.blueGrey,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            FadeSlideIn(
+              delayMs: 200,
+              child: AppCard(
+                child: Row(
+                  children: [
+                    const Icon(Icons.timer_outlined, color: kIndigo),
+                    const SizedBox(width: 12),
+                    const Expanded(child: Text('Time taken')),
+                    Text(
+                      '${fmtDuration(result.secondsTaken)} / ${fmtDuration(result.category.totalSeconds)}',
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: () => Navigator.of(context).push(
+                fadeSlideRoute<void>(ReviewScreen(result: result)),
+              ),
+              icon: const Icon(Icons.fact_check_rounded),
+              label: const Text('Review Answers'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () =>
+                  Navigator.of(context).popUntil((route) => route.isFirst),
+              icon: const Icon(Icons.home_rounded),
+              label: const Text('Back to Home'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ResultStat extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
+
+  const _ResultStat({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AppCard(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 28),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: theme.textTheme.headlineSmall
+                ?.copyWith(fontWeight: FontWeight.w900, color: color),
+          ),
+          Text(
+            label,
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: Colors.blueGrey.shade600),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// ANSWER REVIEW SCREEN
+// ============================================================================
+
+class ReviewScreen extends StatelessWidget {
+  final QuizResult result;
+
+  const ReviewScreen({super.key, required this.result});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Answer Review',
+            style: TextStyle(fontWeight: FontWeight.w800)),
+      ),
+      body: ResponsiveBody(
+        maxWidth: 720,
+        child: ListView.builder(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+          itemCount: result.review.length,
+          itemBuilder: (context, i) => Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: FadeSlideIn(
+              delayMs: i * 60,
+              child: _ReviewCard(number: i + 1, item: result.review[i]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ReviewCard extends StatelessWidget {
+  final int number;
+  final ReviewItem item;
+
+  const _ReviewCard({required this.number, required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final q = item.question;
+
+    final Color statusColor;
+    final String statusText;
+    final IconData statusIcon;
+    if (!item.answered) {
+      statusColor = Colors.blueGrey;
+      statusText = 'Unanswered';
+      statusIcon = Icons.help_rounded;
+    } else if (item.correct) {
+      statusColor = Colors.green.shade600;
+      statusText = 'Correct';
+      statusIcon = Icons.check_circle_rounded;
+    } else {
+      statusColor = Colors.red.shade500;
+      statusText = 'Incorrect';
+      statusIcon = Icons.cancel_rounded;
+    }
+
+    return AppCard(
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                'Question $number',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: kIndigo,
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(statusIcon, size: 16, color: statusColor),
+                    const SizedBox(width: 4),
+                    Text(
+                      statusText,
+                      style: TextStyle(
+                        color: statusColor,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            q.text,
+            style: theme.textTheme.titleMedium
+                ?.copyWith(fontWeight: FontWeight.w700, height: 1.4),
+          ),
+          const SizedBox(height: 14),
+          for (var i = 0; i < q.options.length; i++) _buildOption(context, i),
+          const SizedBox(height: 4),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: kIndigo.withValues(alpha: 0.07),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.lightbulb_rounded, color: kIndigo, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    q.explanation,
+                    style: theme.textTheme.bodyMedium?.copyWith(height: 1.4),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOption(BuildContext context, int i) {
+    final q = item.question;
+    final isCorrect = i == q.answer;
+    final isSelected = i == item.selected;
+
+    Color bg = Colors.white;
+    Color border = Colors.grey.shade300;
+    Color accent = Colors.blueGrey.shade600;
+    String? tag;
+    IconData? trailing;
+
+    if (isCorrect) {
+      bg = Colors.green.withValues(alpha: 0.12);
+      border = Colors.green.shade500;
+      accent = Colors.green.shade700;
+      tag = isSelected ? 'Your answer - Correct' : 'Correct answer';
+      trailing = Icons.check_circle_rounded;
+    } else if (isSelected) {
+      bg = Colors.red.withValues(alpha: 0.10);
+      border = Colors.red.shade400;
+      accent = Colors.red.shade600;
+      tag = 'Your answer';
+      trailing = Icons.cancel_rounded;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: border, width: tag == null ? 1 : 1.8),
+      ),
+      child: Row(
+        children: [
+          Text(
+            String.fromCharCode(65 + i),
+            style: TextStyle(fontWeight: FontWeight.w800, color: accent),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(q.options[i]),
+                if (tag != null)
+                  Text(
+                    tag,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: accent,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          if (trailing != null) Icon(trailing, color: accent),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// HISTORY TAB
+// ============================================================================
+
+class HistoryTab extends StatelessWidget {
+  final List<QuizResult> history;
+
+  const HistoryTab({super.key, required this.history});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final items = history.reversed.toList();
+
+    return ResponsiveBody(
+      maxWidth: 720,
+      child: items.isEmpty
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                Padding(
+                  padding: EdgeInsets.fromLTRB(16, 20, 16, 0),
+                  child: SectionTitle('Quiz History',
+                      subtitle: 'Your completed quizzes appear here'),
+                ),
+                Expanded(
+                  child: EmptyState(
+                    icon: Icons.history_rounded,
+                    title: 'No quizzes yet',
+                    message:
+                        'Complete a quiz from the Home tab and your results will be listed here for this session.',
+                  ),
+                ),
+              ],
+            )
+          : ListView(
+              padding: const EdgeInsets.fromLTRB(16, 20, 16, 24),
+              children: [
+                SectionTitle(
+                  'Quiz History',
+                  subtitle:
+                      '${items.length} quiz${items.length == 1 ? '' : 'zes'} completed this session',
+                ),
+                const SizedBox(height: 16),
+                for (var i = 0; i < items.length; i++)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: FadeSlideIn(
+                      delayMs: i * 50,
+                      child: AppCard(
+                        onTap: () => Navigator.of(context).push(
+                          fadeSlideRoute<void>(ResultScreen(result: items[i])),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 50,
+                              height: 50,
+                              decoration: BoxDecoration(
+                                color: items[i].category.color,
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: Icon(items[i].category.icon,
+                                  color: Colors.white),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    items[i].category.name,
+                                    style: theme.textTheme.titleSmall
+                                        ?.copyWith(fontWeight: FontWeight.w800),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Score ${items[i].correct}/${items[i].total}  |  ${fmtDate(items[i].completedAt)}',
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                        color: Colors.blueGrey.shade600),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: kIndigo.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: Text(
+                                fmtPercent(items[i].percent),
+                                style: const TextStyle(
+                                  color: kIndigo,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                Center(
+                  child: Text(
+                    'Tap a quiz to see details and review answers',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: Colors.blueGrey.shade400),
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+// ============================================================================
+// LEADERBOARD TAB
+// ============================================================================
+
+const List<LeaderboardEntry> kSampleLeaderboard = [
+  LeaderboardEntry('Ananya Sharma', 182, 20, 92),
+  LeaderboardEntry('Rahul Verma', 171, 19, 90),
+  LeaderboardEntry('Priya Nair', 165, 18, 88),
+  LeaderboardEntry('Karthik Reddy', 158, 18, 86),
+  LeaderboardEntry('Sneha Iyer', 149, 17, 84),
+  LeaderboardEntry('Mohammed Faiz', 142, 16, 82),
+  LeaderboardEntry('Divya Patel', 133, 15, 80),
+  LeaderboardEntry('Vikram Singh', 125, 14, 78),
+  LeaderboardEntry('Meera Joshi', 118, 14, 76),
+  LeaderboardEntry('Aditya Kumar', 109, 13, 74),
+];
+
+class LeaderboardTab extends StatelessWidget {
+  final List<QuizResult> history;
+
+  const LeaderboardTab({super.key, required this.history});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    final entries = <LeaderboardEntry>[...kSampleLeaderboard];
+    if (history.isNotEmpty) {
+      entries.add(LeaderboardEntry(
+        '$kStudentName (You)',
+        history.totalCorrect,
+        history.length,
+        history.averagePercent,
+        isYou: true,
+      ));
+    }
+    entries.sort((a, b) => b.score.compareTo(a.score));
+    final yourRank = entries.indexWhere((e) => e.isYou) + 1;
+
+    return ResponsiveBody(
+      maxWidth: 720,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 20, 16, 24),
+        children: [
+          const SectionTitle('Leaderboard',
+              subtitle: 'Top performers ranked by total marks'),
+          const SizedBox(height: 16),
+          FadeSlideIn(
+            child: AppCard(
+              gradient: kBrandGradient,
+              child: Row(
+                children: [
+                  const Icon(Icons.military_tech_rounded,
+                      color: Colors.white, size: 40),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          yourRank > 0 ? 'Your rank: #$yourRank' : 'Join the race!',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        Text(
+                          yourRank > 0
+                              ? '${history.totalCorrect} marks from ${history.length} quiz${history.length == 1 ? '' : 'zes'}'
+                              : 'Complete a quiz to appear on the leaderboard.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: Colors.white.withValues(alpha: 0.9),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          for (var i = 0; i < entries.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: FadeSlideIn(
+                delayMs: i * 50,
+                child: _LeaderboardCard(rank: i + 1, entry: entries[i]),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LeaderboardCard extends StatelessWidget {
+  final int rank;
+  final LeaderboardEntry entry;
+
+  const _LeaderboardCard({required this.rank, required this.entry});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    final Color? medal = switch (rank) {
+      1 => const Color(0xFFF5B301),
+      2 => const Color(0xFF9CA3AF),
+      3 => const Color(0xFFCD7F32),
+      _ => null,
+    };
+
+    return AppCard(
+      borderColor: entry.isYou ? scheme.primary : null,
+      color: entry.isYou ? scheme.primaryContainer.withValues(alpha: 0.5) : null,
+      child: Row(
+        children: [
+          SizedBox(
+            width: 38,
+            child: medal != null
+                ? Icon(Icons.emoji_events_rounded, color: medal, size: 32)
+                : Text(
+                    '#$rank',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: Colors.blueGrey.shade600,
+                    ),
+                  ),
+          ),
+          const SizedBox(width: 10),
+          CircleAvatar(
+            radius: 22,
+            backgroundColor: entry.isYou ? kPurple : kBlue.withValues(alpha: 0.15),
+            child: Text(
+              initials(entry.name.replaceAll(' (You)', '')),
+              style: TextStyle(
+                fontWeight: FontWeight.w800,
+                color: entry.isYou ? Colors.white : kBlue,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  entry.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w800),
+                ),
+                Text(
+                  '${entry.quizzes} quizzes  |  avg ${fmtPercent(entry.average)}',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: Colors.blueGrey.shade600),
+                ),
+              ],
+            ),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                '${entry.score}',
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w900,
+                  color: kIndigo,
+                ),
+              ),
+              Text('marks', style: theme.textTheme.bodySmall),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// PROFILE TAB
+// ============================================================================
+
+class ProfileTab extends StatelessWidget {
+  final List<QuizResult> history;
+
+  const ProfileTab({super.key, required this.history});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    Widget infoRow(IconData icon, String label, String value) => Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(
+            children: [
+              Icon(icon, color: kIndigo, size: 22),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(label,
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: Colors.blueGrey.shade600)),
+                    Text(value,
+                        style: theme.textTheme.bodyLarge
+                            ?.copyWith(fontWeight: FontWeight.w600)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+
+    return ResponsiveBody(
+      maxWidth: 720,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 20, 16, 24),
+        children: [
+          FadeSlideIn(
+            child: Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                gradient: kBrandGradient,
+                borderRadius: BorderRadius.circular(28),
+                boxShadow: [
+                  BoxShadow(
+                    color: kPurple.withValues(alpha: 0.28),
+                    blurRadius: 24,
+                    offset: const Offset(0, 12),
+                  ),
+                ],
+              ),
+              child: Column(
+                children: [
+                  CircleAvatar(
+                    radius: 44,
+                    backgroundColor: Colors.white,
+                    child: Text(
+                      initials(kStudentName),
+                      style: theme.textTheme.headlineMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                        color: kPurple,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    kStudentName,
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  Text(
+                    'B.Tech Computer Science - 3rd Year',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: Colors.white.withValues(alpha: 0.9),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          FadeSlideIn(
+            delayMs: 100,
+            child: Row(
+              children: [
+                Expanded(
+                  child: StatCard(
+                    icon: Icons.task_alt_rounded,
+                    label: 'Quizzes attempted',
+                    value: '${history.length}',
+                    color: kBlue,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: StatCard(
+                    icon: Icons.emoji_events_rounded,
+                    label: 'Highest score',
+                    value: history.isEmpty
+                        ? '--'
+                        : fmtPercent(history.bestPercent),
+                    color: kPurple,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          FadeSlideIn(
+            delayMs: 160,
+            child: Row(
+              children: [
+                Expanded(
+                  child: StatCard(
+                    icon: Icons.percent_rounded,
+                    label: 'Average score',
+                    value: history.isEmpty
+                        ? '--'
+                        : fmtPercent(history.averagePercent),
+                    color: kIndigo,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: StatCard(
+                    icon: Icons.check_circle_outline_rounded,
+                    label: 'Total correct answers',
+                    value: '${history.totalCorrect}',
+                    color: const Color(0xFF0EA5E9),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (history.bestCategory != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8, left: 4),
+              child: Text(
+                'Strongest subject: ${history.bestCategory}',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: Colors.blueGrey.shade600),
+              ),
+            ),
+          const SizedBox(height: 16),
+          FadeSlideIn(
+            delayMs: 220,
+            child: AppCard(
+              child: Column(
+                children: [
+                  infoRow(Icons.badge_rounded, 'Roll number', '25PA5A0530'),
+                  const Divider(height: 1),
+                  infoRow(Icons.email_rounded, 'Email',
+                      '25pa5a0530@vishnu.edu.in'),
+                  const Divider(height: 1),
+                  infoRow(Icons.school_rounded, 'College',
+                      'Vishnu Institute of Technology'),
+                  const Divider(height: 1),
+                  infoRow(Icons.calendar_month_rounded, 'Member since',
+                      'August 2024'),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// QUESTION BANK (9 categories x 5 questions)
+// ============================================================================
+
+final List<QuizCategory> kCategories = [
+  QuizCategory(
+    name: 'C Programming',
+    icon: Icons.code_rounded,
+    color: const Color(0xFF2563EB),
+    questions: const [
+      Question(
+        'What does sizeof(char) always evaluate to in C?',
+        ['0', '1', '2', 'It is implementation-defined'],
+        1,
+        'By definition in the C standard, sizeof(char) is always 1. A byte may have more than 8 bits, but char is still one byte.',
+      ),
+      Question(
+        'Which function allocates memory dynamically AND initialises it to zero?',
+        ['malloc()', 'calloc()', 'realloc()', 'free()'],
+        1,
+        'calloc(n, size) allocates n * size bytes and sets all bits to zero, whereas malloc leaves the memory uninitialised.',
+      ),
+      Question(
+        'What is the output of: int a[] = {1, 2, 3}; printf("%d", *(a + 1));',
+        ['1', '2', '3', 'Garbage value'],
+        1,
+        'a + 1 points to the second element, so dereferencing it prints 2. Array indexing a[i] is equivalent to *(a + i).',
+      ),
+      Question(
+        'Which storage class preserves the value of a local variable between function calls?',
+        ['auto', 'register', 'static', 'extern'],
+        2,
+        'A static local variable is initialised once and retains its value for the lifetime of the program.',
+      ),
+      Question(
+        'Which declaration correctly defines a pointer to an array of 10 integers?',
+        ['int *p[10];', 'int (*p)[10];', 'int *p(10);', 'int p[10]*;'],
+        1,
+        'The parentheses in int (*p)[10] bind * to p first, making p a pointer to an array. int *p[10] is an array of 10 int pointers.',
+      ),
+    ],
+  ),
+  QuizCategory(
+    name: 'Java Programming',
+    icon: Icons.coffee_rounded,
+    color: const Color(0xFF7C3AED),
+    questions: const [
+      Question(
+        'Which keyword prevents a class from being subclassed in Java?',
+        ['static', 'final', 'abstract', 'private'],
+        1,
+        'A class declared final cannot be extended. String is a well-known example of a final class.',
+      ),
+      Question(
+        'Which collection does NOT allow duplicate elements?',
+        ['ArrayList', 'LinkedList', 'HashSet', 'Vector'],
+        2,
+        'HashSet implements the Set interface, which stores unique elements only. Lists permit duplicates.',
+      ),
+      Question(
+        'What is the default value of an int instance variable in Java?',
+        ['0', 'null', 'undefined', '-1'],
+        0,
+        'Instance variables get default values: 0 for numeric types, false for boolean and null for object references. Local variables get none.',
+      ),
+      Question(
+        'Which exception is thrown when an integer is divided by zero?',
+        [
+          'NullPointerException',
+          'ArithmeticException',
+          'NumberFormatException',
+          'ArrayIndexOutOfBoundsException'
+        ],
+        1,
+        'Integer division by zero throws ArithmeticException. Floating-point division by zero yields Infinity or NaN instead.',
+      ),
+      Question(
+        'Which OOP concept lets a subclass provide its own implementation of a method already defined in its superclass?',
+        ['Overloading', 'Overriding', 'Encapsulation', 'Abstraction'],
+        1,
+        'Method overriding is runtime polymorphism: the subclass redefines an inherited method with the same signature.',
+      ),
+    ],
+  ),
+  QuizCategory(
+    name: 'Python Programming',
+    icon: Icons.terminal_rounded,
+    color: const Color(0xFF4F46E5),
+    questions: const [
+      Question(
+        'What is the output of print(type([]))?',
+        [
+          "<class 'tuple'>",
+          "<class 'list'>",
+          "<class 'dict'>",
+          "<class 'set'>"
+        ],
+        1,
+        '[] is an empty list literal, so type() returns the list class.',
+      ),
+      Question(
+        'Which of the following data types is immutable in Python?',
+        ['list', 'dict', 'set', 'tuple'],
+        3,
+        'Tuples cannot be modified after creation. Lists, dictionaries and sets are mutable.',
+      ),
+      Question(
+        'What does len({1, 2, 2, 3}) return?',
+        ['2', '3', '4', 'Error'],
+        1,
+        'Curly braces with values create a set, which removes duplicates, giving {1, 2, 3} with length 3.',
+      ),
+      Question(
+        'Which keyword is paired with try to handle exceptions in Python?',
+        ['catch', 'except', 'handle', 'rescue'],
+        1,
+        'Python uses try / except (optionally else and finally). catch belongs to languages such as Java and C++.',
+      ),
+      Question(
+        'What is the output of print(2 ** 3 ** 2)?',
+        ['64', '512', '36', '128'],
+        1,
+        'The ** operator is right-associative: 3 ** 2 = 9, then 2 ** 9 = 512.',
+      ),
+    ],
+  ),
+  QuizCategory(
+    name: 'Data Structures',
+    icon: Icons.account_tree_rounded,
+    color: const Color(0xFF0EA5E9),
+    questions: const [
+      Question(
+        'Which data structure follows the LIFO (Last In, First Out) principle?',
+        ['Queue', 'Stack', 'Array', 'Linked list'],
+        1,
+        'In a stack the most recently pushed element is the first one popped.',
+      ),
+      Question(
+        'What is the worst-case time complexity of binary search on a sorted array of n elements?',
+        ['O(n)', 'O(log n)', 'O(n log n)', 'O(1)'],
+        1,
+        'Binary search halves the search space each step, requiring at most log2(n) comparisons.',
+      ),
+      Question(
+        'Which traversal of a Binary Search Tree visits keys in ascending order?',
+        ['Preorder', 'Postorder', 'Inorder', 'Level-order'],
+        2,
+        'Inorder traversal (left, node, right) of a BST yields the keys in sorted order.',
+      ),
+      Question(
+        'Which data structure is typically used to implement Breadth-First Search (BFS)?',
+        ['Stack', 'Queue', 'Heap', 'Hash table'],
+        1,
+        'BFS explores nodes level by level, so it uses a FIFO queue. DFS uses a stack (or recursion).',
+      ),
+      Question(
+        'What is the worst-case time complexity of Quick Sort?',
+        ['O(n log n)', 'O(n)', 'O(n\u00B2)', 'O(log n)'],
+        2,
+        'With consistently bad pivots (for example an already sorted array and a first-element pivot) Quick Sort degrades to O(n\u00B2). Its average case is O(n log n).',
+      ),
+    ],
+  ),
+  QuizCategory(
+    name: 'Database Management Systems',
+    icon: Icons.storage_rounded,
+    color: const Color(0xFF9333EA),
+    questions: const [
+      Question(
+        'Which normal form eliminates partial dependency on a composite primary key?',
+        ['1NF', '2NF', '3NF', 'BCNF'],
+        1,
+        'A relation is in 2NF if it is in 1NF and no non-key attribute depends on only part of a composite key.',
+      ),
+      Question(
+        'Which SQL clause is used to filter groups after GROUP BY?',
+        ['WHERE', 'HAVING', 'ORDER BY', 'LIMIT'],
+        1,
+        'WHERE filters rows before grouping; HAVING filters the groups produced by GROUP BY, usually using aggregate functions.',
+      ),
+      Question(
+        'Which ACID property guarantees that a transaction is executed completely or not at all?',
+        ['Atomicity', 'Consistency', 'Isolation', 'Durability'],
+        0,
+        'Atomicity ensures all operations of a transaction are applied, or none are (rollback).',
+      ),
+      Question(
+        'Which of the following is a DDL (Data Definition Language) command?',
+        ['SELECT', 'INSERT', 'ALTER', 'UPDATE'],
+        2,
+        'ALTER changes the structure of a table. SELECT, INSERT and UPDATE are DML commands that work on the data.',
+      ),
+      Question(
+        'What is the main purpose of a foreign key?',
+        [
+          'To uniquely identify each row',
+          'To enforce referential integrity between tables',
+          'To speed up sorting',
+          'To encrypt column data'
+        ],
+        1,
+        'A foreign key refers to the primary key of another table and prevents orphan records, ensuring referential integrity.',
+      ),
+    ],
+  ),
+  QuizCategory(
+    name: 'Operating Systems',
+    icon: Icons.memory_rounded,
+    color: const Color(0xFF3B82F6),
+    questions: const [
+      Question(
+        'Which CPU scheduling algorithm can cause starvation of long processes?',
+        [
+          'First Come First Serve',
+          'Round Robin',
+          'Shortest Job First',
+          'None of these'
+        ],
+        2,
+        'If short jobs keep arriving, SJF keeps selecting them and long jobs may wait indefinitely.',
+      ),
+      Question(
+        'The four necessary conditions for deadlock are mutual exclusion, hold and wait, no preemption and which other?',
+        ['Starvation', 'Circular wait', 'Thrashing', 'Paging'],
+        1,
+        'Coffman conditions: mutual exclusion, hold and wait, no preemption and circular wait must all hold for a deadlock.',
+      ),
+      Question(
+        'What is thrashing in an operating system?',
+        [
+          'Very high CPU utilisation',
+          'Excessive paging that leaves the CPU mostly idle',
+          'Faster disk access',
+          'A high cache hit ratio'
+        ],
+        1,
+        'When a system spends more time swapping pages than executing processes, CPU utilisation drops sharply.',
+      ),
+      Question(
+        "Which page replacement algorithm suffers from Belady's anomaly?",
+        ['LRU', 'Optimal', 'FIFO', 'LFU'],
+        2,
+        "With FIFO, increasing the number of frames can sometimes increase page faults. LRU and Optimal are stack algorithms and are free from this anomaly.",
+      ),
+      Question(
+        'A semaphore is primarily used for:',
+        [
+          'Memory allocation',
+          'Process synchronisation',
+          'File compression',
+          'Disk scheduling'
+        ],
+        1,
+        'Semaphores (with wait and signal operations) coordinate access to shared resources between processes or threads.',
+      ),
+    ],
+  ),
+  QuizCategory(
+    name: 'Computer Networks',
+    icon: Icons.lan_rounded,
+    color: const Color(0xFF6D28D9),
+    questions: const [
+      Question(
+        'How many layers does the OSI reference model have?',
+        ['4', '5', '7', '8'],
+        2,
+        'OSI layers: Physical, Data Link, Network, Transport, Session, Presentation and Application.',
+      ),
+      Question(
+        'Which protocol translates domain names into IP addresses?',
+        ['DHCP', 'DNS', 'ARP', 'FTP'],
+        1,
+        'The Domain Name System maps human-readable names such as example.com to IP addresses.',
+      ),
+      Question(
+        'Which OSI layer is responsible for routing packets between networks?',
+        ['Data Link', 'Network', 'Transport', 'Session'],
+        1,
+        'The Network layer (IP) handles logical addressing and routing. Routers operate at this layer.',
+      ),
+      Question(
+        'What is the default port number of HTTPS?',
+        ['80', '21', '443', '25'],
+        2,
+        'HTTPS uses TCP port 443. HTTP uses 80, FTP uses 21 and SMTP uses 25.',
+      ),
+      Question(
+        'Which protocol provides reliable, connection-oriented data delivery?',
+        ['UDP', 'IP', 'TCP', 'ICMP'],
+        2,
+        'TCP establishes a connection with a three-way handshake and uses acknowledgements and retransmission for reliability.',
+      ),
+    ],
+  ),
+  QuizCategory(
+    name: 'General Knowledge',
+    icon: Icons.public_rounded,
+    color: const Color(0xFF0284C7),
+    questions: const [
+      Question(
+        'Which planet is known as the Red Planet?',
+        ['Venus', 'Mars', 'Jupiter', 'Saturn'],
+        1,
+        'Mars appears red because of iron oxide (rust) on its surface.',
+      ),
+      Question(
+        "Who wrote India's national anthem, 'Jana Gana Mana'?",
+        [
+          'Bankim Chandra Chatterjee',
+          'Rabindranath Tagore',
+          'Sarojini Naidu',
+          'Subramania Bharati'
+        ],
+        1,
+        "Rabindranath Tagore composed 'Jana Gana Mana'. 'Vande Mataram' was written by Bankim Chandra Chatterjee.",
+      ),
+      Question(
+        'Which is the largest ocean on Earth?',
+        ['Atlantic Ocean', 'Indian Ocean', 'Arctic Ocean', 'Pacific Ocean'],
+        3,
+        'The Pacific Ocean covers about one-third of the Earth\'s surface, more than all the land combined.',
+      ),
+      Question(
+        'What is the chemical symbol for sodium?',
+        ['So', 'Na', 'Sd', 'S'],
+        1,
+        'Na comes from the Latin word natrium. S is sulphur.',
+      ),
+      Question(
+        'Chandrayaan-3 made a historic soft landing near the south pole of which celestial body in 2023?',
+        ['Mars', 'The Moon', 'Venus', 'The Sun'],
+        1,
+        "India's Chandrayaan-3 landed near the lunar south pole in August 2023, making India the fourth country to soft-land on the Moon.",
+      ),
+    ],
+  ),
+  QuizCategory(
+    name: 'Aptitude and Reasoning',
+    icon: Icons.psychology_rounded,
+    color: const Color(0xFFA855F7),
+    questions: const [
+      Question(
+        'What is 20% of 250?',
+        ['40', '50', '60', '25'],
+        1,
+        '20% of 250 = (20 / 100) x 250 = 50.',
+      ),
+      Question(
+        'Find the next number in the series: 2, 6, 12, 20, 30, ?',
+        ['40', '42', '44', '36'],
+        1,
+        'The differences are 4, 6, 8, 10, so the next difference is 12 and 30 + 12 = 42. (The terms are n x (n + 1).)',
+      ),
+      Question(
+        'A train 150 m long passes a pole in 10 seconds. What is its speed?',
+        ['15 km/h', '54 km/h', '36 km/h', '60 km/h'],
+        1,
+        'Speed = 150 / 10 = 15 m/s. Multiply by 18/5 to convert to km/h: 15 x 3.6 = 54 km/h.',
+      ),
+      Question(
+        'If 6 workers can finish a job in 10 days, how many days will 12 workers take (same rate of work)?',
+        ['20 days', '5 days', '6 days', '8 days'],
+        1,
+        'Total work = 6 x 10 = 60 worker-days. With 12 workers: 60 / 12 = 5 days.',
+      ),
+      Question(
+        'What is the simple interest on \u20B92000 at 5% per annum for 3 years?',
+        ['\u20B9200', '\u20B9300', '\u20B9400', '\u20B9500'],
+        1,
+        'SI = (P x R x T) / 100 = (2000 x 5 x 3) / 100 = \u20B9300.',
+      ),
+    ],
+  ),
+];
